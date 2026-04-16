@@ -13,24 +13,44 @@ GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
 NEWS_COUNT       = 7
 
 RSS_FEEDS = [
-    {"name": "Anthropic Blog",  "url": "https://www.anthropic.com/rss.xml"},
-    {"name": "OpenAI Blog",     "url": "https://openai.com/blog/rss.xml"},
-    {"name": "Google DeepMind", "url": "https://deepmind.google/blog/rss.xml"},
-    {"name": "The Verge AI",    "url": "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml"},
-    {"name": "TechCrunch AI",   "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
-    {"name": "MIT Tech Review", "url": "https://www.technologyreview.com/feed/"},
-    {"name": "VentureBeat AI",  "url": "https://venturebeat.com/ai/feed/"},
+    # ── الشركات الكبرى ──────────────────────────────
+    {"name": "Anthropic",        "url": "https://www.anthropic.com/rss.xml"},
+    {"name": "OpenAI",           "url": "https://openai.com/blog/rss.xml"},
+    {"name": "Google DeepMind",  "url": "https://deepmind.google/blog/rss.xml"},
+    {"name": "Google AI",        "url": "https://blog.google/technology/ai/rss/"},
+    {"name": "Meta AI",          "url": "https://ai.meta.com/blog/rss/"},
+    {"name": "Microsoft AI",     "url": "https://blogs.microsoft.com/ai/feed/"},
+    {"name": "Mistral AI",       "url": "https://mistral.ai/news/rss.xml"},
+    {"name": "Hugging Face",     "url": "https://huggingface.co/blog/feed.xml"},
+
+    # ── المواقع التقنية العالمية ─────────────────────
+    {"name": "The Verge AI",     "url": "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml"},
+    {"name": "TechCrunch AI",    "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
+    {"name": "MIT Tech Review",  "url": "https://www.technologyreview.com/feed/"},
+    {"name": "VentureBeat AI",   "url": "https://venturebeat.com/ai/feed/"},
+    {"name": "Wired AI",         "url": "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss"},
+    {"name": "Ars Technica AI",  "url": "https://feeds.arstechnica.com/arstechnica/technology-lab"},
+    {"name": "ZDNet AI",         "url": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml"},
+
+    # ── أبحاث ومستجدات علمية ────────────────────────
+    {"name": "ArXiv AI",         "url": "https://rss.arxiv.org/rss/cs.AI"},
+    {"name": "Papers With Code", "url": "https://paperswithcode.com/latest.rss"},
+
+    # ── مصادر عربية ─────────────────────────────────
+    {"name": "عالم التقنية",     "url": "https://www.3alam.net/feed"},
+    {"name": "أرابيان بزنس تك",  "url": "https://www.arabianbusiness.com/taxonomy/term/25803/rss.xml"},
+    {"name": "مجلة رواد الأعمال","url": "https://rowadalaamal.com/feed/"},
 ]
 
 HASHTAGS = "#ذكاء_اصطناعي #AI #تقنية #ChatGPT #مستقبل_التقنية"
 
 def fetch_news():
     all_news = []
-    cutoff = datetime.now() - timedelta(hours=48)
+    cutoff = datetime.now() - timedelta(hours=24)  # آخر 24 ساعة فقط
     for source in RSS_FEEDS:
         try:
             feed = feedparser.parse(source["url"])
-            for entry in feed.entries[:5]:
+            for entry in feed.entries[:3]:
                 if hasattr(entry, "published_parsed") and entry.published_parsed:
                     if datetime(*entry.published_parsed[:6]) < cutoff:
                         continue
@@ -48,10 +68,11 @@ def fetch_news():
 def select_and_translate(news_list):
     news_text = "\n".join(
         f"{i+1}. [{n['source']}] {n['title']}\n{n['summary'][:200]}\n{n['link']}"
-        for i, n in enumerate(news_list[:25])
+        for i, n in enumerate(news_list[:35])
     )
     prompt = f"""اختر {NEWS_COUNT} أخبار الأهم من القائمة وترجمها للعربي.
-معايير: منتجات جديدة، إعلانات كبرى، أبحاث مهمة.
+معايير: منتجات جديدة، إعلانات كبرى، أبحاث مهمة، تأثير على المستخدم العربي.
+تجنب الأخبار المكررة أو الأقل أهمية.
 
 {news_text}
 
@@ -59,7 +80,7 @@ def select_and_translate(news_list):
 [{{
   "title_ar": "عنوان جذاب بالعربي",
   "body_ar": "شرح الخبر في 2-3 جمل بالعربي",
-  "tweet": "تغريدة عربية جذابة ومفيدة تشرح الخبر في جملة أو جملتين — أقل من 180 حرف — بدون هاشتاقات ورابط",
+  "tweet": "تغريدة عربية جذابة تشرح الخبر في جملة أو جملتين — أقل من 180 حرف — بدون هاشتاقات ورابط",
   "source": "اسم المصدر",
   "link": "رابط الخبر",
   "emoji": "إيموجي مناسب"
@@ -104,15 +125,12 @@ def run():
     tg_send(f"🤖 *أخبار الذكاء الاصطناعي — {today}*\n{'─'*28}")
 
     for item in selected:
-        # رسالة الخبر الكاملة
         tg_send(
             f"{item['emoji']} *{item['title_ar']}*\n\n"
             f"{item['body_ar']}\n\n"
             f"📌 {item['source']}\n"
             f"🔗 [اقرأ المزيد]({item['link']})"
         )
-
-        # التغريدة الجاهزة
         tweet = f"{item['emoji']} {item['tweet']}\n\n{HASHTAGS}\n\n🔗 {item['link']}"
         tg_send(
             f"──────────────\n"
