@@ -1,6 +1,5 @@
 import os, json, feedparser, requests
 from datetime import datetime, timedelta
-from requests_oauthlib import OAuth1
 
 try:
     from dotenv import load_dotenv
@@ -11,12 +10,7 @@ except ImportError:
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
-TW_CONSUMER_KEY        = os.environ.get("TW_CONSUMER_KEY")
-TW_CONSUMER_SECRET     = os.environ.get("TW_CONSUMER_SECRET")
-TW_ACCESS_TOKEN        = os.environ.get("TW_ACCESS_TOKEN")
-TW_ACCESS_TOKEN_SECRET = os.environ.get("TW_ACCESS_TOKEN_SECRET")
-
-NEWS_COUNT = 7
+NEWS_COUNT       = 7
 
 RSS_FEEDS = [
     {"name": "Anthropic Blog",  "url": "https://www.anthropic.com/rss.xml"},
@@ -27,6 +21,8 @@ RSS_FEEDS = [
     {"name": "MIT Tech Review", "url": "https://www.technologyreview.com/feed/"},
     {"name": "VentureBeat AI",  "url": "https://venturebeat.com/ai/feed/"},
 ]
+
+HASHTAGS = "#ذكاء_اصطناعي #AI #تقنية #ChatGPT #مستقبل_التقنية"
 
 def fetch_news():
     all_news = []
@@ -60,7 +56,7 @@ def select_and_translate(news_list):
 {news_text}
 
 رد بـ JSON فقط بدون أي نص آخر:
-[{{"title_ar":"...","body_ar":"2-3 جمل بالعربي","tweet":"تغريدة عربية جذابة أقل من 250 حرف تلخص الخبر مع إيموجي","source":"...","link":"...","emoji":"..."}}]"""
+[{{"title_ar":"...","body_ar":"جملة واحدة أو جملتان مختصرتان بالعربي","tweet":"تغريدة عربية جذابة أقل من 200 حرف فقط بدون هاشتاقات ورابط","source":"...","link":"...","emoji":"..."}}]"""
 
     resp = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -78,26 +74,13 @@ def select_and_translate(news_list):
         if text.startswith("json"): text = text[4:]
     return json.loads(text.strip())
 
-def tg_send(text):
+def tg_send(text, parse_mode="Markdown"):
     r = requests.post(
         f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
         json={"chat_id": TELEGRAM_CHAT_ID, "text": text,
-              "parse_mode": "Markdown", "disable_web_page_preview": False}
+              "parse_mode": parse_mode, "disable_web_page_preview": True}
     )
     if not r.ok: print(f"⚠️ TG: {r.text}")
-
-def tweet(text):
-    auth = OAuth1(TW_CONSUMER_KEY, TW_CONSUMER_SECRET,
-                  TW_ACCESS_TOKEN, TW_ACCESS_TOKEN_SECRET)
-    r = requests.post(
-        "https://api.twitter.com/2/tweets",
-        auth=auth,
-        json={"text": text}
-    )
-    if r.ok:
-        print(f"✅ تغريدة نُشرت")
-    else:
-        print(f"⚠️ X: {r.text}")
 
 def run():
     print(f"🚀 {datetime.now()}")
@@ -114,16 +97,25 @@ def run():
     tg_send(f"🤖 *أخبار الذكاء الاصطناعي — {today}*\n{'─'*28}")
 
     for item in selected:
-        # تلجرام
+        # رسالة الخبر
         tg_send(
             f"{item['emoji']} *{item['title_ar']}*\n\n"
             f"{item['body_ar']}\n\n"
             f"📌 {item['source']}\n"
             f"🔗 [اقرأ المزيد]({item['link']})"
         )
-        # X (تويتر)
-        tweet_text = f"{item.get('tweet', item['title_ar'])}\n\n{item['link']}"
-        tweet(tweet_text)
+
+        # التغريدة الجاهزة للنسخ
+        tweet = (
+            f"{item['tweet']}\n\n"
+            f"{HASHTAGS}\n\n"
+            f"🔗 {item['link']}"
+        )
+        tg_send(
+            f"──────────────\n"
+            f"📋 *التغريدة — انسخ والصق في X:*\n\n"
+            f"`{tweet}`"
+        )
 
     print("✅ تم!")
 
