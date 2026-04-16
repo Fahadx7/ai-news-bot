@@ -1,5 +1,6 @@
 import os, json, feedparser, requests
 from datetime import datetime, timedelta
+from requests_oauthlib import OAuth1
 
 try:
     from dotenv import load_dotenv
@@ -10,7 +11,12 @@ except ImportError:
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
-NEWS_COUNT       = 7
+TW_CONSUMER_KEY        = os.environ.get("TW_CONSUMER_KEY")
+TW_CONSUMER_SECRET     = os.environ.get("TW_CONSUMER_SECRET")
+TW_ACCESS_TOKEN        = os.environ.get("TW_ACCESS_TOKEN")
+TW_ACCESS_TOKEN_SECRET = os.environ.get("TW_ACCESS_TOKEN_SECRET")
+
+NEWS_COUNT = 7
 
 RSS_FEEDS = [
     {"name": "Anthropic Blog",  "url": "https://www.anthropic.com/rss.xml"},
@@ -54,7 +60,7 @@ def select_and_translate(news_list):
 {news_text}
 
 رد بـ JSON فقط بدون أي نص آخر:
-[{{"title_ar":"...","body_ar":"2-3 جمل بالعربي","source":"...","link":"...","emoji":"..."}}]"""
+[{{"title_ar":"...","body_ar":"2-3 جمل بالعربي","tweet":"تغريدة عربية جذابة أقل من 250 حرف تلخص الخبر مع إيموجي","source":"...","link":"...","emoji":"..."}}]"""
 
     resp = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -80,6 +86,19 @@ def tg_send(text):
     )
     if not r.ok: print(f"⚠️ TG: {r.text}")
 
+def tweet(text):
+    auth = OAuth1(TW_CONSUMER_KEY, TW_CONSUMER_SECRET,
+                  TW_ACCESS_TOKEN, TW_ACCESS_TOKEN_SECRET)
+    r = requests.post(
+        "https://api.twitter.com/2/tweets",
+        auth=auth,
+        json={"text": text}
+    )
+    if r.ok:
+        print(f"✅ تغريدة نُشرت")
+    else:
+        print(f"⚠️ X: {r.text}")
+
 def run():
     print(f"🚀 {datetime.now()}")
     news = fetch_news()
@@ -87,17 +106,25 @@ def run():
     if not news:
         tg_send("⚠️ لا توجد أخبار اليوم")
         return
+
     selected = select_and_translate(news)
     print(f"✅ {len(selected)} خبر مختار")
+
     today = datetime.now().strftime("%d/%m/%Y")
     tg_send(f"🤖 *أخبار الذكاء الاصطناعي — {today}*\n{'─'*28}")
+
     for item in selected:
+        # تلجرام
         tg_send(
             f"{item['emoji']} *{item['title_ar']}*\n\n"
             f"{item['body_ar']}\n\n"
             f"📌 {item['source']}\n"
             f"🔗 [اقرأ المزيد]({item['link']})"
         )
+        # X (تويتر)
+        tweet_text = f"{item.get('tweet', item['title_ar'])}\n\n{item['link']}"
+        tweet(tweet_text)
+
     print("✅ تم!")
 
 if __name__ == "__main__":
