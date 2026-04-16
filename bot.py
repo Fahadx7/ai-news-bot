@@ -56,7 +56,14 @@ def select_and_translate(news_list):
 {news_text}
 
 رد بـ JSON فقط بدون أي نص آخر:
-[{{"title_ar":"...","body_ar":"جملة واحدة أو جملتان مختصرتان بالعربي","tweet":"تغريدة عربية جذابة أقل من 200 حرف فقط بدون هاشتاقات ورابط","source":"...","link":"...","emoji":"..."}}]"""
+[{{
+  "title_ar": "عنوان جذاب بالعربي",
+  "body_ar": "شرح الخبر في 2-3 جمل بالعربي",
+  "tweet": "تغريدة عربية جذابة ومفيدة تشرح الخبر في جملة أو جملتين — أقل من 180 حرف — بدون هاشتاقات ورابط",
+  "source": "اسم المصدر",
+  "link": "رابط الخبر",
+  "emoji": "إيموجي مناسب"
+}}]"""
 
     resp = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
@@ -97,7 +104,7 @@ def run():
     tg_send(f"🤖 *أخبار الذكاء الاصطناعي — {today}*\n{'─'*28}")
 
     for item in selected:
-        # رسالة الخبر
+        # رسالة الخبر الكاملة
         tg_send(
             f"{item['emoji']} *{item['title_ar']}*\n\n"
             f"{item['body_ar']}\n\n"
@@ -105,15 +112,11 @@ def run():
             f"🔗 [اقرأ المزيد]({item['link']})"
         )
 
-        # التغريدة الجاهزة للنسخ
-        tweet = (
-            f"{item['tweet']}\n\n"
-            f"{HASHTAGS}\n\n"
-            f"🔗 {item['link']}"
-        )
+        # التغريدة الجاهزة
+        tweet = f"{item['emoji']} {item['tweet']}\n\n{HASHTAGS}\n\n🔗 {item['link']}"
         tg_send(
             f"──────────────\n"
-            f"📋 *التغريدة — انسخ والصق في X:*\n\n"
+            f"📋 *انسخ والصق في X:*\n\n"
             f"`{tweet}`"
         )
 
