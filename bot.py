@@ -1,5 +1,8 @@
 import os, json, feedparser, requests
 from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
+import time
+import tweepy
 
 try:
     from dotenv import load_dotenv
@@ -10,7 +13,14 @@ except ImportError:
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROQ_API_KEY     = os.environ.get("GROQ_API_KEY")
-NEWS_COUNT       = 7
+
+# X API Credentials
+TWITTER_CONSUMER_KEY = os.environ.get("TWITTER_CONSUMER_KEY")
+TWITTER_CONSUMER_SECRET = os.environ.get("TWITTER_CONSUMER_SECRET")
+TWITTER_ACCESS_TOKEN = os.environ.get("TWITTER_ACCESS_TOKEN")
+TWITTER_ACCESS_TOKEN_SECRET = os.environ.get("TWITTER_ACCESS_TOKEN_SECRET")
+
+NEWS_COUNT = 7
 
 RSS_FEEDS = [
     # ── الشركات الكبرى ──────────────────────────────
@@ -46,7 +56,7 @@ HASHTAGS = "#ذكاء_اصطناعي #AI #تقنية #ChatGPT #مستقبل_ال
 
 def fetch_news():
     all_news = []
-    cutoff = datetime.now() - timedelta(hours=24)  # آخر 24 ساعة فقط
+    cutoff = datetime.now() - timedelta(hours=4)  # آخر 4 ساعات فقط
     for source in RSS_FEEDS:
         try:
             feed = feedparser.parse(source["url"])
@@ -110,6 +120,23 @@ def tg_send(text, parse_mode="Markdown"):
     )
     if not r.ok: print(f"⚠️ TG: {r.text}")
 
+def post_to_x(tweet_text):
+    """نشر تغريدة على X"""
+    try:
+        auth = tweepy.OAuthHandler(TWITTER_CONSUMER_KEY, TWITTER_CONSUMER_SECRET)
+        auth.set_access_token(TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_TOKEN_SECRET)
+        api = tweepy.API(auth)
+        
+        api.update_status(tweet_text)
+        print(f"✅ تم نشر على X: {tweet_text[:50]}...")
+        return True
+    except tweepy.TweepyException as e:
+        print(f"⚠️ خطأ X: {e}")
+        return False
+    except Exception as e:
+        print(f"⚠️ خطأ غير متوقع: {e}")
+        return False
+
 def run():
     print(f"🚀 {datetime.now()}")
     news = fetch_news()
@@ -137,8 +164,27 @@ def run():
             f"📋 *انسخ والصق في X:*\n\n"
             f"`{tweet}`"
         )
+        
+        # 🐦 نشر تلقائي على X
+        post_to_x(tweet)
 
     print("✅ تم!")
 
 if __name__ == "__main__":
+    print("🤖 AI News Bot — Scheduler Started")
+    print("⏰ تشغيل كل 4 ساعات\n")
+    
+    # تشغيل فوري الآن
     run()
+    
+    # جدولة التشغيل كل 4 ساعات
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(run, 'interval', hours=4)
+    scheduler.start()
+    
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        scheduler.shutdown()
+        print("\n✋ تم إيقاف البوت")
