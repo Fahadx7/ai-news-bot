@@ -1,352 +1,720 @@
-import os, json, feedparser, requests, random
-from datetime import datetime, timedelta
-from apscheduler.schedulers.background import BackgroundScheduler
+"""
+AI News Bot v3 — Professional Edition
+قناة @fahadai · Telegram فقط (بدون X)
+
+الميزات:
+  • جلب من 35+ مصدر أخبار + 8 قنوات YouTube
+  • تنسيق HTML احترافي (بدون شروح تغريدات)
+  • دورة أخبار كل 4 ساعات
+  • تقرير يومي مسائي (9 مساءً الرياض)
+  • فيديوهات مختارة يومياً (2 ظهراً الرياض)
+  • حماية من التكرار بـ cache
+
+المتغيرات المطلوبة:
+  TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, GROQ_API_KEY
+"""
+
+import hashlib
+import json
+import os
+import random
+import re
 import time
-import tweepy
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional
 
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
+import feedparser
+import pytz
+import requests
+from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.cron import CronTrigger
+from dotenv import load_dotenv
 
-# ── Credentials ──────────────────────────────────────────
-TELEGRAM_TOKEN          = os.environ.get("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID        = os.environ.get("TELEGRAM_CHAT_ID")
-GROQ_API_KEY            = os.environ.get("GROQ_API_KEY")
-TWITTER_CONSUMER_KEY    = os.environ.get("TWITTER_CONSUMER_KEY")
-TWITTER_CONSUMER_SECRET = os.environ.get("TWITTER_CONSUMER_SECRET")
-TWITTER_ACCESS_TOKEN    = os.environ.get("TWITTER_ACCESS_TOKEN")
-TWITTER_ACCESS_SECRET   = os.environ.get("TWITTER_ACCESS_TOKEN_SECRET")
+# ============================================================
+# CONFIG
+# ============================================================
 
-NEWS_COUNT    = 5   # أخبار عادية
-THREAD_COUNT  = 1   # خبر واحد يتحول لـ thread
-MAX_TWEET_LEN = 270
+load_dotenv()
 
-# ── مصادر متنوعة (33 مصدر) ────────────────────────────
-RSS_FEEDS = [
-    # الشركات الكبرى
-    {"name": "Anthropic",          "url": "https://www.anthropic.com/rss.xml",                            "type": "company"},
-    {"name": "OpenAI",             "url": "https://openai.com/blog/rss.xml",                              "type": "company"},
-    {"name": "Google DeepMind",    "url": "https://deepmind.google/blog/rss.xml",                         "type": "company"},
-    {"name": "Google AI",          "url": "https://blog.google/technology/ai/rss/",                       "type": "company"},
-    {"name": "Meta AI",            "url": "https://ai.meta.com/blog/rss/",                                "type": "company"},
-    {"name": "Microsoft AI",       "url": "https://blogs.microsoft.com/ai/feed/",                         "type": "company"},
-    {"name": "Mistral AI",         "url": "https://mistral.ai/news/rss.xml",                              "type": "company"},
-    {"name": "Hugging Face",       "url": "https://huggingface.co/blog/feed.xml",                         "type": "research"},
-    {"name": "Cohere",             "url": "https://cohere.com/blog/rss",                                  "type": "company"},
-    # مواقع عالمية
-    {"name": "The Verge AI",       "url": "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml","type": "media"},
-    {"name": "TechCrunch AI",      "url": "https://techcrunch.com/category/artificial-intelligence/feed/",    "type": "media"},
-    {"name": "MIT Tech Review",    "url": "https://www.technologyreview.com/feed/",                           "type": "media"},
-    {"name": "VentureBeat AI",     "url": "https://venturebeat.com/ai/feed/",                                 "type": "media"},
-    {"name": "Wired AI",           "url": "https://www.wired.com/feed/tag/artificial-intelligence/latest/rss","type": "media"},
-    {"name": "Ars Technica",       "url": "https://feeds.arstechnica.com/arstechnica/technology-lab",         "type": "media"},
-    {"name": "ZDNet AI",           "url": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml",      "type": "media"},
-    {"name": "IEEE Spectrum AI",   "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss","type": "media"},
-    # أبحاث
-    {"name": "ArXiv AI",           "url": "https://rss.arxiv.org/rss/cs.AI",          "type": "research"},
-    {"name": "ArXiv LLM",          "url": "https://rss.arxiv.org/rss/cs.CL",          "type": "research"},
-    {"name": "Papers With Code",   "url": "https://paperswithcode.com/latest.rss",     "type": "research"},
-    # مصادر عربية متنوعة
-    {"name": "عالم التقنية",           "url": "https://www.3alam.net/feed",                               "type": "arabic"},
-    {"name": "أرابيان بزنس تك",        "url": "https://www.arabianbusiness.com/taxonomy/term/25803/rss.xml","type": "arabic"},
-    {"name": "مجلة رواد الأعمال",      "url": "https://rowadalaamal.com/feed/",                           "type": "arabic"},
-    {"name": "Forbes Middle East",     "url": "https://www.forbesmiddleeast.com/feed",                    "type": "arabic"},
-    {"name": "Gulf Business Tech",     "url": "https://gulfbusiness.com/category/technology/feed/",       "type": "arabic"},
-    {"name": "Wamda",                  "url": "https://www.wamda.com/feed",                               "type": "arabic"},
-    {"name": "Arab News Tech",         "url": "https://www.arabnews.com/taxonomy/term/17936/rss.xml",     "type": "arabic"},
-    {"name": "Saudi Gazette Tech",     "url": "https://saudigazette.com.sa/rss/technology.xml",           "type": "arabic"},
-    # مدونات AI متخصصة
-    {"name": "The Batch DL.AI",    "url": "https://www.deeplearning.ai/the-batch/rss/", "type": "ai_blog"},
-    {"name": "Last Week in AI",    "url": "https://lastweekin.ai/feed",                  "type": "ai_blog"},
-    {"name": "AI Business",        "url": "https://aibusiness.com/rss.xml",              "type": "ai_blog"},
-    {"name": "Towards AI",         "url": "https://pub.towardsai.net/feed",              "type": "ai_blog"},
-    {"name": "Import AI",          "url": "https://importai.substack.com/feed",          "type": "ai_blog"},
-]
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 
-# هاشتاقات متنوعة — تتغير كل دورة
-HASHTAG_POOLS = [
-    "#ذكاء_اصطناعي #AI #تقنية",
-    "#ChatGPT #مستقبل_التقنية #تكنولوجيا",
-    "#تقنية_سعودية #AI #رؤية2030",
-    "#ذكاء_اصطناعي #OpenAI #تقنية",
-    "#MachineLearning #ذكاء_اصطناعي #ابتكار",
-    "#LLM #تقنية #مستقبل",
-    "#تقنية #AI #ريادة_أعمال",
-    "#ذكاء_اصطناعي #تعلم_آلي #مستقبل_التقنية",
-    "#رؤية2030 #تقنية_سعودية #ذكاء_اصطناعي",
-    "#GenAI #ذكاء_اصطناعي #تقنية",
-]
+RIYADH_TZ = pytz.timezone("Asia/Riyadh")
+GROQ_MODEL = "llama-3.3-70b-versatile"
+CHANNEL_HANDLE = "@fahadai"
 
-# روابط YouTube حسب الشركة
-YOUTUBE_REFS = {
-    "openai":     "https://youtube.com/@OpenAI",
-    "google":     "https://youtube.com/@Google",
-    "anthropic":  "https://youtube.com/@AnthropicAI",
-    "meta":       "https://youtube.com/@MetaAI",
-    "microsoft":  "https://youtube.com/@Microsoft",
-    "deepmind":   "https://youtube.com/@GoogleDeepMind",
-    "default":    "https://youtube.com/@TwoMinutePapers",
+CACHE_FILE = "/tmp/fahadai_posted.json"
+MAX_CACHE_SIZE = 800
+
+# ============================================================
+# SOURCES
+# ============================================================
+
+NEWS_SOURCES = {
+    # --- شركات AI الرئيسية ---
+    "Anthropic": "https://www.anthropic.com/news/rss.xml",
+    "OpenAI": "https://openai.com/blog/rss.xml",
+    "Google DeepMind": "https://deepmind.google/blog/rss.xml",
+    "Google AI Blog": "https://blog.google/technology/ai/rss/",
+    "Meta AI": "https://ai.meta.com/blog/rss/",
+    "Microsoft AI": "https://blogs.microsoft.com/ai/feed/",
+    "Mistral": "https://mistral.ai/news/rss.xml",
+    "HuggingFace": "https://huggingface.co/blog/feed.xml",
+    "Cohere": "https://cohere.com/blog/rss.xml",
+    "Stability AI": "https://stability.ai/blog?format=rss",
+
+    # --- إعلام تقني ---
+    "TechCrunch AI": "https://techcrunch.com/category/artificial-intelligence/feed/",
+    "The Verge AI": "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
+    "VentureBeat AI": "https://venturebeat.com/category/ai/feed/",
+    "MIT Tech Review": "https://www.technologyreview.com/feed/",
+    "Wired AI": "https://www.wired.com/feed/tag/ai/latest/rss",
+    "Ars Technica": "https://feeds.arstechnica.com/arstechnica/technology-lab",
+    "ZDNet AI": "https://www.zdnet.com/topic/artificial-intelligence/rss.xml",
+    "IEEE Spectrum AI": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss",
+    "Semafor Tech": "https://www.semafor.com/technology/feed.xml",
+
+    # --- أبحاث ---
+    "ArXiv AI": "http://export.arxiv.org/rss/cs.AI",
+    "ArXiv ML": "http://export.arxiv.org/rss/cs.LG",
+    "ArXiv NLP": "http://export.arxiv.org/rss/cs.CL",
+
+    # --- نشرات وتحليلات AI ---
+    "The Batch (DeepLearning.AI)": "https://www.deeplearning.ai/the-batch/feed/",
+    "Import AI": "https://jack-clark.net/feed/",
+    "Towards AI": "https://pub.towardsai.net/feed",
+
+    # --- مصادر عربية ---
+    "عالم التقنية": "https://www.tech-wd.com/wd/feed/",
+    "أرابيان بزنس": "https://arabic.arabianbusiness.com/feed",
+    "رواد الأعمال": "https://www.rowadalaamal.com/feed/",
+    "Wamda": "https://www.wamda.com/feed",
+    "Arab News": "https://www.arabnews.com/rss.xml",
+    "Saudi Gazette Tech": "https://saudigazette.com.sa/rss/technology",
+    "Al Arabiya Business": "https://english.alarabiya.net/.mrss/en/business.xml",
 }
 
-# ────────────────────────────────────────────────────────
+YOUTUBE_CHANNELS = {
+    "Two Minute Papers": "UCbfYPyITQ-7l4upoX8nvctg",
+    "Yannic Kilcher": "UCZHmQk67mSJgfCCTn7xBfew",
+    "AI Explained": "UCNJ1Ymd5yFuUPtn21xtRbbw",
+    "Matthew Berman": "UCawZsQWqfGSbCI5yjkdVkTA",
+    "Andrej Karpathy": "UCPk8m_r6fkUSYmvgCBwq-sw",
+    "Sam Witteveen": "UC55ODhbHHRDbNK8OZO9O3qQ",
+    "1littlecoder": "UCpVm7bg6pXKo1Pr6k5kxG9A",
+    "bycloud": "UC29ju8bIPH5as8OGnQzwJyA",
+    "AI Jason": "UCd4lg3W4bRacv96mZ_VmLEw",
+}
 
-def fetch_news():
-    all_news = []
-    cutoff = datetime.now() - timedelta(hours=4)
-    for source in RSS_FEEDS:
-        try:
-            feed = feedparser.parse(source["url"])
-            for entry in feed.entries[:3]:
-                if hasattr(entry, "published_parsed") and entry.published_parsed:
-                    pub = datetime(*entry.published_parsed[:6])
-                    if pub < cutoff:
-                        continue
-                summary = getattr(entry, "summary", getattr(entry, "description", ""))[:400]
-                all_news.append({
-                    "title":   entry.get("title", ""),
+# ============================================================
+# CACHE (Deduplication)
+# ============================================================
+
+def load_cache() -> set:
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            return set(json.load(f))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return set()
+
+def save_cache(cache: set) -> None:
+    trimmed = list(cache)[-MAX_CACHE_SIZE:]
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(trimmed, f)
+    except Exception as exc:
+        print(f"[cache] save error: {exc}")
+
+def item_hash(title: str, url: str) -> str:
+    return hashlib.md5(f"{title}|{url}".encode("utf-8")).hexdigest()[:16]
+
+# ============================================================
+# RSS FETCHING
+# ============================================================
+
+def clean_html(text: str) -> str:
+    if not text:
+        return ""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"&nbsp;", " ", text)
+    text = re.sub(r"&amp;", "&", text)
+    text = re.sub(r"&quot;", '"', text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+def parse_entry_date(entry) -> Optional[datetime]:
+    for field in ("published_parsed", "updated_parsed"):
+        val = getattr(entry, field, None)
+        if val:
+            try:
+                return datetime(*val[:6], tzinfo=timezone.utc)
+            except Exception:
+                continue
+    return None
+
+def fetch_rss(url: str, source: str, hours: int = 4) -> List[Dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    items: List[Dict] = []
+    try:
+        feed = feedparser.parse(
+            url,
+            request_headers={"User-Agent": "Mozilla/5.0 (FahadAI-Bot/3.0)"},
+        )
+        for entry in feed.entries[:20]:
+            published = parse_entry_date(entry)
+            if not published or published < cutoff:
+                continue
+            title = (getattr(entry, "title", "") or "").strip()
+            link = (getattr(entry, "link", "") or "").strip()
+            summary = clean_html(getattr(entry, "summary", ""))[:600]
+            if title and link:
+                items.append({
+                    "title": title,
+                    "url": link,
                     "summary": summary,
-                    "link":    entry.get("link", ""),
-                    "source":  source["name"],
-                    "type":    source.get("type", "media"),
+                    "source": source,
+                    "published": published.isoformat(),
                 })
-        except Exception as e:
-            print(f"⚠️ {source['name']}: {e}")
-    print(f"📡 جُلب {len(all_news)} خبر من {len(RSS_FEEDS)} مصدر")
-    return all_news
+    except Exception as exc:
+        print(f"[rss] {source}: {exc}")
+    return items
 
+def fetch_all_news(hours: int = 4) -> List[Dict]:
+    collected: List[Dict] = []
+    for name, url in NEWS_SOURCES.items():
+        collected.extend(fetch_rss(url, name, hours=hours))
+        time.sleep(0.25)
+    print(f"[news] {len(collected)} articles from {len(NEWS_SOURCES)} sources (last {hours}h)")
+    return collected
 
-def groq_call(prompt, max_tokens=3000):
-    resp = requests.post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-        json={
-            "model": "llama-3.3-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "temperature": 0.4,
-        }
-    )
-    text = resp.json()["choices"][0]["message"]["content"].strip()
-    if "```" in text:
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    return json.loads(text.strip())
+def fetch_youtube_videos(hours: int = 30) -> List[Dict]:
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    videos: List[Dict] = []
+    for channel, cid in YOUTUBE_CHANNELS.items():
+        url = f"https://www.youtube.com/feeds/videos.xml?channel_id={cid}"
+        try:
+            feed = feedparser.parse(url)
+            for entry in feed.entries[:3]:
+                published = parse_entry_date(entry)
+                if not published or published < cutoff:
+                    continue
+                videos.append({
+                    "title": (getattr(entry, "title", "") or "").strip(),
+                    "url": (getattr(entry, "link", "") or "").strip(),
+                    "channel": channel,
+                    "summary": clean_html(getattr(entry, "summary", ""))[:400],
+                    "published": published.isoformat(),
+                })
+        except Exception as exc:
+            print(f"[youtube] {channel}: {exc}")
+        time.sleep(0.25)
+    print(f"[videos] {len(videos)} videos (last {hours}h)")
+    return videos
 
+# ============================================================
+# GROQ CLIENT
+# ============================================================
 
-def select_news(news_list):
-    news_text = "\n".join(
-        f"{i+1}. [{n['source']}|{n['type']}] {n['title']}\n{n['summary'][:200]}\n{n['link']}"
-        for i, n in enumerate(news_list[:50])
-    )
-    prompt = f"""أنت محرر أخبار ذكاء اصطناعي سعودي محترف.
+def call_groq(
+    system: str,
+    user: str,
+    temperature: float = 0.4,
+    max_tokens: int = 3500,
+    retries: int = 2,
+) -> Optional[str]:
+    for attempt in range(retries + 1):
+        try:
+            r = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {GROQ_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": GROQ_MODEL,
+                    "messages": [
+                        {"role": "system", "content": system},
+                        {"role": "user", "content": user},
+                    ],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+                timeout=90,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except Exception as exc:
+            print(f"[groq] attempt {attempt + 1} failed: {exc}")
+            if attempt < retries:
+                time.sleep(3)
+    return None
 
-اختر {NEWS_COUNT + THREAD_COUNT} خبر من القائمة:
-- {NEWS_COUNT} خبر عادي (news)
-- {THREAD_COUNT} خبر مهم للـ thread — يكون خبر حقيقي واضح وليس بحث أكاديمي
-
-قواعد الاختيار الصارمة:
-✅ أولوية قصوى: إعلانات منتجات جديدة، تحديثات ChatGPT/Gemini/Claude، صفقات شركات، إطلاقات
-✅ ثانياً: أخبار تأثير على الناس العاديين (تطبيقات، أدوات، تغييرات في الخدمات)
-✅ ثالثاً: أبحاث لها تطبيق عملي واضح وفوري
-❌ تجنب: أبحاث أكاديمية جافة بدون تطبيق (ArXiv مجرد نظريات)
-❌ تجنب: أخبار قديمة أو مكررة
-❌ لا خبرين من نفس الشركة
-❌ لا تختار خبر النوع thread إذا كان بحث أكاديمي — اختر خبر شركة أو منتج
-
-{news_text}
-
-رد بـ JSON فقط بدون أي نص آخر:
-[{{
-  "title_ar": "عنوان جذاب باللهجة السعودية — مباشر وواضح",
-  "body_ar": "شرح الخبر في 2-3 جمل بالعربي — ايش الجديد وليش يهم",
-  "tweet_main": "تغريدة باللهجة السعودية — خبر مباشر جذاب — أقل من 220 حرف — بدون هاشتاقات",
-  "source": "اسم المصدر",
-  "source_key": "openai أو google أو anthropic أو meta أو microsoft أو deepmind أو default",
-  "link": "رابط الخبر",
-  "emoji": "إيموجي مناسب",
-  "content_type": "news أو thread"
-}}]
-
-الخبر الأخير (thread) يكون خبر شركة أو منتج مهم — ليس بحث أكاديمي."""
-
-    return groq_call(prompt)
-
-
-def build_thread_parts(item):
-    prompt = f"""أنت صانع محتوى تقني سعودي محترف.
-
-الخبر: {item['title_ar']}
-التفاصيل: {item['body_ar']}
-المصدر: {item['source']}
-
-اكتب thread تويتر مقنع باللهجة السعودية — 4 تغريدات:
-🧵 1: سؤال أو موقف جذاب يشد القارئ
-📰 2: ايش صار بالتحديد؟
-💡 3: ليش يهمك؟ ايش الفايدة العملية؟
-🔮 4: توقعك الشخصي أو سؤال للتفاعل
-
-كل تغريدة أقل من 230 حرف. لا هاشتاقات.
-
-رد بـ JSON فقط — مصفوفة من 4 نصوص:
-["التغريدة 1", "التغريدة 2", "التغريدة 3", "التغريدة 4"]"""
-
-    try:
-        return groq_call(prompt)
-    except Exception as e:
-        print(f"⚠️ Thread build error: {e}")
-        return [item["tweet_main"]]
-
-
-def tg_send(text, parse_mode="Markdown"):
-    r = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        json={"chat_id": TELEGRAM_CHAT_ID, "text": text,
-              "parse_mode": parse_mode, "disable_web_page_preview": True}
-    )
-    if not r.ok:
-        print(f"⚠️ TG: {r.text[:120]}")
-
-
-def post_tweet(text):
-    try:
-        client = tweepy.Client(
-            consumer_key=TWITTER_CONSUMER_KEY,
-            consumer_secret=TWITTER_CONSUMER_SECRET,
-            access_token=TWITTER_ACCESS_TOKEN,
-            access_token_secret=TWITTER_ACCESS_SECRET
-        )
-        resp = client.create_tweet(text=text[:280])
-        tweet_id = resp.data["id"]
-        print(f"✅ X: {text[:70]}...")
-        return tweet_id
-    except Exception as e:
-        print(f"⚠️ X Error: {e}")
+def extract_json(raw: Optional[str]) -> Optional[Any]:
+    if not raw:
         return None
+    text = raw.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    for pattern in (r"\[[\s\S]*\]", r"\{[\s\S]*\}"):
+        m = re.search(pattern, text)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except json.JSONDecodeError:
+                continue
+    return None
 
+# ============================================================
+# PROMPTS
+# ============================================================
 
-def post_thread(parts, hashtags, link, youtube_url=None):
+NEWS_SYSTEM = """أنت محرر رئيسي لقناة أخبار ذكاء اصطناعي عربية احترافية (مستوى The Neuron و TLDR AI).
+القواعد:
+- عربية فصيحة رفيعة، بلمسة سعودية مهنية هادئة
+- لا حشو، لا مبالغة، لا كلمات تسويقية (ثوري، مذهل، لا يُصدَّق)
+- جمل قصيرة واضحة
+- دقة تامة في الأسماء والأرقام"""
+
+NEWS_USER = """اختر أهم {n} أخبار من القائمة. كل خبر مرقم بـ id.
+
+معايير الاختيار الصارمة:
+1. تأثير حقيقي على الصناعة: إطلاق نموذج، اختراق بحثي، صفقة كبرى، تغيير سياسة
+2. مصداقية المصدر وجدّة الخبر
+3. أهمية للمطور/الشركة العربية
+
+استبعد:
+- إعلانات تسويقية أو PR
+- مقالات رأي عامة
+- أخبار شركات صغيرة مجهولة
+- تكرار أخبار سابقة
+- hype بدون جوهر
+
+لكل خبر مختار أرجع JSON بالحقول التالية بالضبط:
+{{
+  "id": <رقم id من القائمة>,
+  "category": "launch|research|funding|partnership|product|controversy|policy|benchmark",
+  "category_label_ar": "إطلاق|بحث|تمويل|شراكة|منتج|خلاف|سياسة|معيار",
+  "company": "اسم الشركة الرئيسية في الخبر",
+  "headline": "عنوان عربي قوي (حد أقصى 75 حرف، بدون أقواس أو اقتباسات)",
+  "summary": "جملتان واضحتان تشرحان الخبر (حد أقصى 300 حرف)",
+  "context": "جملة واحدة: لماذا هذا الخبر الآن؟ (اختياري - اتركها فارغة '' إذا غير مهم)",
+  "impact": "جملة واحدة: الأثر العملي على المطور/الشركة (اختياري)",
+  "importance": 1-10
+}}
+
+القائمة:
+{articles}
+
+أرجع JSON array فقط. بدون أي نص قبله أو بعده. بدون markdown."""
+
+VIDEOS_SYSTEM = """أنت منسق محتوى فيديو AI. تختار أفضل الفيديوهات التعليمية والتحليلية العميقة."""
+
+VIDEOS_USER = """اختر أفضل {n} فيديوهات من القائمة.
+
+معايير:
+- محتوى تقني عميق أو شرح موضوع مهم
+- يضيف قيمة فعلية للمطور/المهتم بـ AI
+- استبعد clickbait أو محتوى سطحي
+
+لكل فيديو أرجع JSON بالحقول:
+{{
+  "id": <id من القائمة>,
+  "title_ar": "عنوان مكيّف بالعربي يوصل الفكرة (حد أقصى 80 حرف)",
+  "channel": "اسم القناة كما هو",
+  "description_ar": "جملتان وصف بالعربي (حد أقصى 240 حرف)",
+  "value_prop": "جملة واحدة: ليش هذا الفيديو يستحق المشاهدة",
+  "category": "tutorial|analysis|news|research|interview"
+}}
+
+القائمة:
+{videos}
+
+أرجع JSON array فقط."""
+
+REPORT_SYSTEM = """أنت محلل صناعة الذكاء الاصطناعي. تكتب تقارير يومية احترافية قصيرة بعمق تحليلي."""
+
+REPORT_USER = """اكتب تقريراً يومياً عن أبرز أحداث AI اليوم.
+
+الأخبار المتاحة:
+{articles}
+
+أرجع JSON بالشكل التالي:
+{{
+  "top_stories": [
+    {{"rank": 1, "headline": "عنوان مختصر قوي", "summary": "جملتان واضحتان"}},
+    {{"rank": 2, "headline": "...", "summary": "..."}},
+    {{"rank": 3, "headline": "...", "summary": "..."}}
+  ],
+  "theme_of_the_day": "موضوع اليوم الأبرز في جملة (مثلاً: 'حرب النماذج المفتوحة' أو 'صعود AI Agents')",
+  "reading_between_lines": "فقرة تحليلية 3-4 جمل: ماذا تخبرنا أخبار اليوم مجتمعة؟ ما النمط؟",
+  "tomorrow_watch": "جملتان: ماذا نترقب في الأيام القادمة؟"
+}}
+
+أرجع JSON فقط، بالعربية الفصحى المهنية."""
+
+# ============================================================
+# TELEGRAM FORMATTING
+# ============================================================
+
+CATEGORY_EMOJI = {
+    "launch": "🚀",
+    "research": "🔬",
+    "funding": "💰",
+    "partnership": "🤝",
+    "product": "📱",
+    "controversy": "⚠️",
+    "policy": "⚖️",
+    "benchmark": "📊",
+}
+
+def esc(text: Any) -> str:
+    if not text:
+        return ""
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+def format_news(item: Dict, url: str, source: str, idx: int, total: int) -> str:
+    emoji = CATEGORY_EMOJI.get(item.get("category", ""), "📰")
+    label = esc(item.get("category_label_ar", "خبر"))
+    company = esc(item.get("company", ""))
+    headline = esc(item.get("headline", ""))
+    summary = esc(item.get("summary", ""))
+    context = esc(item.get("context", "")).strip()
+    impact = esc(item.get("impact", "")).strip()
+
+    header = f"{emoji} <b>{label}</b>"
+    if company:
+        header += f" · {company}"
+
+    lines = [header, "", f"<b>{headline}</b>", "", summary]
+
+    if context:
+        lines += ["", f"📌 <b>السياق:</b> {context}"]
+    if impact:
+        lines += [f"💡 <b>الأثر:</b> {impact}"]
+
+    lines += [
+        "",
+        f'🔗 <a href="{esc(url)}">{esc(source)}</a>',
+        "",
+        f"<i>{idx}/{total} · {CHANNEL_HANDLE}</i>",
+    ]
+    return "\n".join(lines)
+
+def format_video(item: Dict, url: str) -> str:
+    title = esc(item.get("title_ar", ""))
+    channel = esc(item.get("channel", ""))
+    desc = esc(item.get("description_ar", ""))
+    value = esc(item.get("value_prop", "")).strip()
+
+    lines = [
+        f"🎬 <b>فيديو مختار</b> · {channel}",
+        "",
+        f"<b>{title}</b>",
+        "",
+        desc,
+    ]
+    if value:
+        lines += ["", f"💎 <b>ليش يستحق:</b> {value}"]
+    lines += [
+        "",
+        f'▶️ <a href="{esc(url)}">مشاهدة على YouTube</a>',
+        "",
+        f"<i>{CHANNEL_HANDLE}</i>",
+    ]
+    return "\n".join(lines)
+
+def format_report(report: Dict, date_str: str) -> str:
+    theme = esc(report.get("theme_of_the_day", "")).strip()
+    reading = esc(report.get("reading_between_lines", "")).strip()
+    watch = esc(report.get("tomorrow_watch", "")).strip()
+
+    lines = [
+        f"📊 <b>تقرير اليوم</b> · {date_str}",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        "",
+        "<b>أبرز أحداث الذكاء الاصطناعي</b>",
+    ]
+    if theme:
+        lines += ["", f"<i>موضوع اليوم: {theme}</i>"]
+
+    lines.append("")
+    rank_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    for story in report.get("top_stories", [])[:5]:
+        rank = max(1, min(5, int(story.get("rank", 1))))
+        emoji = rank_emojis[rank - 1]
+        head = esc(story.get("headline", ""))
+        summ = esc(story.get("summary", ""))
+        lines += [f"{emoji} <b>{head}</b>", summ, ""]
+
+    if reading:
+        lines += [
+            "━━━━━━━━━━━━━━━━━━━━━━",
+            "",
+            "<b>📖 القراءة بين السطور</b>",
+            reading,
+            "",
+        ]
+    if watch:
+        lines += ["<b>🔭 ماذا نترقب؟</b>", watch, ""]
+
+    lines += [
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"<i>📡 {CHANNEL_HANDLE}</i>",
+    ]
+    return "\n".join(lines)
+
+# ============================================================
+# TELEGRAM SEND
+# ============================================================
+
+def send_telegram(message: str, disable_preview: bool = False) -> bool:
+    if len(message) > 4050:
+        message = message[:4040] + "…"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        client = tweepy.Client(
-            consumer_key=TWITTER_CONSUMER_KEY,
-            consumer_secret=TWITTER_CONSUMER_SECRET,
-            access_token=TWITTER_ACCESS_TOKEN,
-            access_token_secret=TWITTER_ACCESS_SECRET
+        r = requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": disable_preview,
+            },
+            timeout=30,
         )
-        total   = len(parts)
-        last_id = None
+        if r.status_code != 200:
+            print(f"[telegram] {r.status_code}: {r.text[:250]}")
+            return False
+        return True
+    except Exception as exc:
+        print(f"[telegram] exception: {exc}")
+        return False
 
-        for i, part in enumerate(parts):
-            num = f"{i+1}/{total}"
-            if i == total - 1:
-                suffix = f"\n\n{hashtags}\n🔗 {link}"
-                if youtube_url:
-                    suffix += f"\n📺 {youtube_url}"
-                tweet_text = f"{num} {part}{suffix}"
-            else:
-                tweet_text = f"{num} {part}"
+# ============================================================
+# CYCLES
+# ============================================================
 
-            tweet_text = tweet_text[:280]
-            if last_id:
-                resp = client.create_tweet(text=tweet_text, in_reply_to_tweet_id=last_id)
-            else:
-                resp = client.create_tweet(text=tweet_text)
+def news_cycle() -> None:
+    ts = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d %H:%M")
+    print(f"\n━━━ [news-cycle] {ts} ━━━")
 
-            last_id = resp.data["id"]
-            print(f"✅ Thread {num}")
-            time.sleep(2)
+    cache = load_cache()
+    articles = fetch_all_news(hours=4)
 
-        return last_id
-    except Exception as e:
-        print(f"⚠️ Thread Error: {e}")
-        return None
-
-
-def run():
-    print(f"\n{'='*45}")
-    print(f"🚀 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*45}")
-
-    news = fetch_news()
-    if not news:
-        tg_send("⚠️ ما لقيت أخبار جديدة في آخر 4 ساعات")
+    fresh = [a for a in articles if item_hash(a["title"], a["url"]) not in cache]
+    print(f"[news] fresh after dedup: {len(fresh)}")
+    if len(fresh) < 3:
+        print("[news] skip — not enough fresh content")
         return
 
-    try:
-        selected = select_news(news)
-    except Exception as e:
-        print(f"⚠️ Groq Error: {e}")
-        tg_send(f"⚠️ خطأ في معالجة الأخبار: {str(e)[:100]}")
+    # Trim and index for Groq
+    pool = fresh[:60]
+    compact = [{
+        "id": i,
+        "title": a["title"][:220],
+        "summary": a["summary"][:280],
+        "source": a["source"],
+    } for i, a in enumerate(pool)]
+
+    raw = call_groq(
+        NEWS_SYSTEM,
+        NEWS_USER.format(n=6, articles=json.dumps(compact, ensure_ascii=False)),
+        temperature=0.35,
+        max_tokens=3800,
+    )
+    curated = extract_json(raw)
+    if not curated or not isinstance(curated, list):
+        print("[news] curation failed")
         return
 
-    print(f"✅ {len(selected)} خبر مختار")
+    # Sort by importance, cap at 6
+    curated = sorted(curated, key=lambda x: x.get("importance", 5), reverse=True)[:6]
+    total = len(curated)
 
-    now_str = datetime.now().strftime("%d/%m/%Y — %H:%M")
-    tg_send(f"🤖 *أخبار الذكاء الاصطناعي*\n📅 {now_str}\n{'─'*30}")
+    for i, item in enumerate(curated, 1):
+        try:
+            idx = int(item.get("id", -1))
+            if idx < 0 or idx >= len(pool):
+                continue
+            original = pool[idx]
+            url = original["url"]
+            source = original["source"]
 
-    for idx, item in enumerate(selected):
-        is_thread = item.get("content_type") == "thread"
-        hashtags  = random.choice(HASHTAG_POOLS)
-        src_key   = item.get("source_key", "default").lower()
-        youtube   = YOUTUBE_REFS.get(src_key, YOUTUBE_REFS["default"])
+            message = format_news(item, url, source, i, total)
+            if send_telegram(message):
+                cache.add(item_hash(original["title"], url))
+                time.sleep(4)  # gentle pacing
+        except Exception as exc:
+            print(f"[news] item {i} error: {exc}")
 
-        # ── Telegram: بطاقة الخبر ──────────────────
-        tg_msg = (
-            f"{item['emoji']} *{item['title_ar']}*\n\n"
-            f"{item['body_ar']}\n\n"
-            f"📌 {item['source']}\n"
-            f"🔗 [اقرأ المزيد]({item['link']})"
-        )
-        tg_send(tg_msg)
+    save_cache(cache)
+    print(f"[news] sent {total} items")
 
-        # ── X + معاينة ─────────────────────────────
-        if is_thread:
-            parts = build_thread_parts(item)
-            post_thread(parts, hashtags, item["link"], youtube)
+def video_cycle() -> None:
+    ts = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d %H:%M")
+    print(f"\n━━━ [video-cycle] {ts} ━━━")
 
-            # التغريدة الأساسية
-            main_preview = f"{item['emoji']} {parts[0]}"
-            tg_send(
-                f"{'─'*28}\n"
-                f"🐦 *التغريدة الأساسية:*\n\n"
-                f"`{main_preview[:250]}`"
-            )
-            # التغريدات الإضافية
-            if len(parts) > 1:
-                extras = "\n\n".join(
-                    f"➕ *إضافية {i+1}:*\n`{p[:200]}`"
-                    for i, p in enumerate(parts[1:])
-                )
-                tg_send(extras)
-        else:
-            tweet = f"{item['emoji']} {item['tweet_main']}\n\n{hashtags}\n\n🔗 {item['link']}"
-            post_tweet(tweet[:280])
+    cache = load_cache()
+    videos = fetch_youtube_videos(hours=30)
+    fresh = [v for v in videos if item_hash(v["title"], v["url"]) not in cache]
 
-            # التغريدة الأساسية فقط
-            tg_send(
-                f"{'─'*28}\n"
-                f"🐦 *التغريدة الأساسية:*\n\n"
-                f"`{tweet[:280]}`"
-            )
+    if not fresh:
+        print("[videos] no fresh videos")
+        return
 
-        time.sleep(3)
+    pool = fresh[:15]
+    compact = [{
+        "id": i,
+        "title": v["title"][:220],
+        "channel": v["channel"],
+        "description": v["summary"][:280],
+    } for i, v in enumerate(pool)]
 
-    print("✅ الدورة اكتملت!")
-    tg_send(f"✅ *انتهت دورة {datetime.now().strftime('%H:%M')} — {len(selected)} خبر*")
+    raw = call_groq(
+        VIDEOS_SYSTEM,
+        VIDEOS_USER.format(n=3, videos=json.dumps(compact, ensure_ascii=False)),
+        temperature=0.4,
+        max_tokens=2200,
+    )
+    curated = extract_json(raw)
+    if not curated or not isinstance(curated, list):
+        print("[videos] curation failed")
+        return
+
+    # Header
+    send_telegram(
+        "🎬 <b>فيديوهات اليوم المختارة</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"<i>{len(curated)} فيديو مختارة بعناية · {CHANNEL_HANDLE}</i>",
+        disable_preview=True,
+    )
+    time.sleep(2)
+
+    for video in curated[:3]:
+        try:
+            idx = int(video.get("id", -1))
+            if idx < 0 or idx >= len(pool):
+                continue
+            original = pool[idx]
+            if send_telegram(format_video(video, original["url"])):
+                cache.add(item_hash(original["title"], original["url"]))
+                time.sleep(4)
+        except Exception as exc:
+            print(f"[videos] error: {exc}")
+
+    save_cache(cache)
+    print(f"[videos] sent {len(curated)} videos")
+
+def report_cycle() -> None:
+    ts = datetime.now(RIYADH_TZ).strftime("%Y-%m-%d %H:%M")
+    print(f"\n━━━ [report-cycle] {ts} ━━━")
+
+    articles = fetch_all_news(hours=24)
+    if len(articles) < 5:
+        print("[report] not enough content")
+        return
+
+    compact = [{
+        "title": a["title"][:220],
+        "summary": a["summary"][:280],
+        "source": a["source"],
+    } for a in articles[:45]]
+
+    raw = call_groq(
+        REPORT_SYSTEM,
+        REPORT_USER.format(articles=json.dumps(compact, ensure_ascii=False)),
+        temperature=0.5,
+        max_tokens=2800,
+    )
+    report = extract_json(raw)
+    if not report or not isinstance(report, dict):
+        print("[report] generation failed")
+        return
+
+    now = datetime.now(RIYADH_TZ)
+    months = ["يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+             "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر"]
+    date_str = f"{now.day} {months[now.month - 1]} {now.year}"
+
+    message = format_report(report, date_str)
+    send_telegram(message, disable_preview=True)
+    print("[report] sent")
+
+# ============================================================
+# STARTUP
+# ============================================================
+
+def startup_check() -> None:
+    required = {
+        "TELEGRAM_TOKEN": TELEGRAM_TOKEN,
+        "TELEGRAM_CHAT_ID": TELEGRAM_CHAT_ID,
+        "GROQ_API_KEY": GROQ_API_KEY,
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        print(f"[startup] ❌ متغيرات ناقصة: {missing}")
+        raise SystemExit(1)
+
+    print("[startup] ✅ كل المتغيرات محمّلة")
+    print(f"[startup] مصادر أخبار: {len(NEWS_SOURCES)}")
+    print(f"[startup] قنوات YouTube: {len(YOUTUBE_CHANNELS)}")
+    print(f"[startup] النموذج: {GROQ_MODEL}")
+    print(f"[startup] القناة: {CHANNEL_HANDLE}")
+    print(f"[startup] الوقت الحالي (الرياض): {datetime.now(RIYADH_TZ).strftime('%Y-%m-%d %H:%M:%S')}")
+
+def main() -> None:
+    startup_check()
+
+    scheduler = BlockingScheduler(timezone=RIYADH_TZ)
+
+    # أخبار كل 4 ساعات — أوقات محددة
+    scheduler.add_job(
+        news_cycle,
+        CronTrigger(hour="8,12,16,20,0,4", minute=0, timezone=RIYADH_TZ),
+        id="news",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # فيديوهات يومياً 2 ظهراً
+    scheduler.add_job(
+        video_cycle,
+        CronTrigger(hour=14, minute=0, timezone=RIYADH_TZ),
+        id="videos",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    # تقرير يومي 9 مساءً
+    scheduler.add_job(
+        report_cycle,
+        CronTrigger(hour=21, minute=0, timezone=RIYADH_TZ),
+        id="report",
+        max_instances=1,
+        coalesce=True,
+    )
+
+    print("\n[scheduler] المهام المجدولة:")
+    print("  📰 الأخبار: 8ص · 12ظ · 4ع · 8م · 12ص · 4ص (الرياض)")
+    print("  🎬 الفيديوهات: 2 ظهراً")
+    print("  📊 التقرير اليومي: 9 مساءً")
+
+    # تشغيل دورة أخبار فورية عند بدء التشغيل
+    print("\n[scheduler] ▶️ تشغيل دورة أخبار فورية...")
+    try:
+        news_cycle()
+    except Exception as exc:
+        print(f"[startup-cycle] خطأ: {exc}")
+
+    print("\n[scheduler] ⏰ الجدولة شغالة — في انتظار المواعيد...")
+    scheduler.start()
 
 
 if __name__ == "__main__":
-    print("🤖 AI News Bot v2 — Saudi Edition")
-    print(f"📡 {len(RSS_FEEDS)} مصدر | ⏰ كل 4 ساعات\n")
-    run()
-    scheduler = BackgroundScheduler()
-    scheduler.add_job(run, "interval", hours=4)
-    scheduler.start()
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        scheduler.shutdown()
-        print("\n✋ تم إيقاف البوت")
+    main()
