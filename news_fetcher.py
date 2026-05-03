@@ -1,9 +1,14 @@
 """
-news_fetcher.py — جالب الأخبار من RSS و Google News
+news_fetcher.py v8
+الجديد:
+    - تصنيف تلقائي للأخبار السعودية (is_saudi flag)
+    - smart_prefilter لتقليل الدفعات قبل Groq
+    - دعم متعدد الفئات (saudi, ar, tech, ai, finance)
 """
 
 import hashlib
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -21,29 +26,37 @@ from config import (
     FETCH_TIMEOUT,
     GOOGLE_NEWS_QUERIES,
     PARALLEL_WORKERS,
+    PREFILTER_MAX,
     RSS_SOURCES,
     SOURCE_RETRIES,
+    is_saudi_news,
 )
 
 log = logging.getLogger(__name__)
 
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+
+
+def strip_html(text: str) -> str:
+    if not text:
+        return ""
+    return _WS_RE.sub(" ", _TAG_RE.sub(" ", text)).strip()
+
 
 # ═══════════════════════════════════════════════
-# جلب RSS واحد
+# جلب RSS
 # ═══════════════════════════════════════════════
-def fetch_rss(url: str, lang: str = "ar") -> list[dict]:
-    """يجلب feed واحد ويرجع قائمة مقالات."""
+def fetch_rss(url: str, category: str = "ar") -> list[dict]:
     if feedparser is None:
-        log.error("feedparser غير مثبّت")
         return []
 
     for attempt in range(SOURCE_RETRIES + 1):
         try:
-            # نستخدم requests للحصول على timeout صحيح
             response = requests.get(
                 url,
                 timeout=FETCH_TIMEOUT,
-                headers={"User-Agent": "Mozilla/5.0 (Bot; +https://aboamran2011.com)"},
+                headers={"User-Agent": "Mozilla/5.0 (NewsBot)"},
             )
             if response.status_code != 200:
                 if attempt < SOURCE_RETRIES:
@@ -53,19 +66,15 @@ def fetch_rss(url: str, lang: str = "ar") -> list[dict]:
             feed = feedparser.parse(response.content)
             articles = []
 
-            for entry in feed.entries[:30]:  # أقصى 30 من كل مصدر
+            for entry in feed.entries[:25]:
                 title = entry.get("title", "").strip()
                 link = entry.get("link", "").strip()
                 if not title or not link:
                     continue
 
-                summary = (
-                    entry.get("summary", "")
-                    or entry.get("description", "")
-                ).strip()
-
-                # تنظيف HTML من الـ summary
-                summary = strip_html(summary)
+                summary = strip_html(
+                    entry.get("summary", "") or entry.get("description", "")
+                )
 
                 article = {
                     "id": hashlib.md5(link.encode()).hexdigest()[:12],
@@ -73,43 +82,27 @@ def fetch_rss(url: str, lang: str = "ar") -> list[dict]:
                     "summary": summary,
                     "url": link,
                     "source": feed.feed.get("title", url),
-                    "lang": lang,
+                    "category": category,
                     "published": entry.get("published", ""),
                     "fetched_at": datetime.now(timezone.utc).isoformat(),
                 }
+
+                # تصنيف سعودي تلقائي
+                article["is_saudi"] = (
+                    category == "saudi" or is_saudi_news(article)
+                )
+
                 articles.append(article)
 
             return articles
-        except Exception as e:
+        except Exception:
             if attempt >= SOURCE_RETRIES:
-                log.debug("[fetch-rss] فشل %s: %s", url, e)
                 return []
             time.sleep(1)
     return []
 
 
-# ═══════════════════════════════════════════════
-# تنظيف HTML
-# ═══════════════════════════════════════════════
-import re
-
-_TAG_RE = re.compile(r"<[^>]+>")
-_WS_RE = re.compile(r"\s+")
-
-
-def strip_html(text: str) -> str:
-    if not text:
-        return ""
-    text = _TAG_RE.sub(" ", text)
-    text = _WS_RE.sub(" ", text)
-    return text.strip()
-
-
-# ═══════════════════════════════════════════════
-# Google News
-# ═══════════════════════════════════════════════
 def google_news_url(query: str, lang: str = "ar") -> str:
-    """يبني رابط Google News RSS لاستعلام."""
     hl = lang
     gl = "SA" if lang == "ar" else "US"
     return (
@@ -119,68 +112,63 @@ def google_news_url(query: str, lang: str = "ar") -> str:
 
 
 # ═══════════════════════════════════════════════
-# الجلب المتوازي الكامل
+# الجلب الكامل
 # ═══════════════════════════════════════════════
 def fetch_all_news(
     rss_sources: dict = None,
-    google_queries: list = None,
+    google_queries: dict = None,
 ) -> list[dict]:
-    """يجلب من كل المصادر بالتوازي."""
     rss_sources = rss_sources or RSS_SOURCES
     google_queries = google_queries or GOOGLE_NEWS_QUERIES
 
-    # ابني قائمة كل الـ URLs
     tasks = []
-    for lang, urls in rss_sources.items():
+    for category, urls in rss_sources.items():
         for url in urls:
-            tasks.append((url, lang))
+            tasks.append((url, category))
 
-    # أضف Google News queries
-    for query in google_queries:
-        # استعلم بالعربية والإنجليزية
-        tasks.append((google_news_url(query, "ar"), "ar"))
-        if len(query) > 3:  # كل استعلام بأكثر من 3 أحرف، استعلم بالإنجليزية كمان
-            tasks.append((google_news_url(query, "en"), "en"))
+    # Google News بفئاتها
+    for category, queries in google_queries.items():
+        for q in queries:
+            lang = "ar" if category == "saudi" else "ar"
+            tasks.append((google_news_url(q, lang), category))
 
     log.info("[fetch] جلب من %d مصدر بالتوازي...", len(tasks))
     start = time.time()
 
     all_articles = []
-    success_count = 0
-    fail_count = 0
+    success = 0
+    fail = 0
 
     with ThreadPoolExecutor(max_workers=PARALLEL_WORKERS) as executor:
-        future_to_url = {
-            executor.submit(fetch_rss, url, lang): (url, lang)
-            for url, lang in tasks
+        futures = {
+            executor.submit(fetch_rss, url, cat): (url, cat)
+            for url, cat in tasks
         }
-        for future in as_completed(future_to_url):
-            url, lang = future_to_url[future]
+        for future in as_completed(futures):
             try:
                 articles = future.result()
                 if articles:
                     all_articles.extend(articles)
-                    success_count += 1
+                    success += 1
                 else:
-                    fail_count += 1
-            except Exception as e:
-                log.debug("[fetch] %s exception: %s", url, e)
-                fail_count += 1
+                    fail += 1
+            except Exception:
+                fail += 1
 
     elapsed = time.time() - start
+    saudi_count = sum(1 for a in all_articles if a.get("is_saudi"))
     log.info(
-        "[fetch] ✅ %d مصدر · ❌ %d فارغ · 📰 %d مقال (%.1fس)",
-        success_count, fail_count, len(all_articles), elapsed,
+        "[fetch] ✅ %d مصدر · ❌ %d فارغ · 📰 %d مقال (🇸🇦 %d سعودي) (%.1fس)",
+        success, fail, len(all_articles), saudi_count, elapsed,
     )
 
     return all_articles
 
 
 # ═══════════════════════════════════════════════
-# إزالة التكرار
+# Dedup
 # ═══════════════════════════════════════════════
 def deduplicate(articles: list[dict]) -> list[dict]:
-    """يحذف الأخبار المكررة بناءً على الـ URL والعنوان."""
     seen_urls = set()
     seen_titles = set()
     unique = []
@@ -188,10 +176,9 @@ def deduplicate(articles: list[dict]) -> list[dict]:
     for a in articles:
         url = a.get("url", "")
         title = (a.get("title", "") or "").strip().lower()
-        # signature بناءً على أول 50 حرف من العنوان
         title_sig = title[:50]
 
-        if url in seen_urls or title_sig in seen_titles:
+        if url in seen_urls or (title_sig and title_sig in seen_titles):
             continue
 
         seen_urls.add(url)
@@ -204,25 +191,66 @@ def deduplicate(articles: list[dict]) -> list[dict]:
 
 
 # ═══════════════════════════════════════════════
-# واجهة موحدة (للربط مع scheduler)
+# Smart Prefilter (الجديد!)
+# ═══════════════════════════════════════════════
+def smart_prefilter(
+    articles: list[dict],
+    max_count: int = PREFILTER_MAX,
+    saudi_quota: int = 30,
+) -> list[dict]:
+    """
+    يقلّص قائمة الأخبار قبل Groq:
+    - يحجز quota للأخبار السعودية أولاً
+    - يوازن المصادر (لا أكثر من 5 من نفس المصدر)
+    - يتجاهل العناوين القصيرة
+    """
+    # تنظيف
+    filtered = [a for a in articles if len(a.get("title", "")) >= 20]
+
+    # افصل سعودي عن باقي
+    saudi = [a for a in filtered if a.get("is_saudi") or is_saudi_news(a)]
+    other = [a for a in filtered if not (a.get("is_saudi") or is_saudi_news(a))]
+
+    # وازن المصادر داخل كل مجموعة
+    def balance_sources(items: list[dict], max_per_src: int = 5) -> list[dict]:
+        counts = {}
+        result = []
+        for a in items:
+            src = a.get("source", "?")
+            if counts.get(src, 0) >= max_per_src:
+                continue
+            counts[src] = counts.get(src, 0) + 1
+            result.append(a)
+        return result
+
+    saudi_balanced = balance_sources(saudi)[:saudi_quota]
+    other_quota = max_count - len(saudi_balanced)
+    other_balanced = balance_sources(other)[:other_quota]
+
+    result = saudi_balanced + other_balanced
+    log.info(
+        "[prefilter] %d → %d خبر (🇸🇦 %d + 🌍 %d)",
+        len(articles), len(result), len(saudi_balanced), len(other_balanced),
+    )
+    return result
+
+
+# ═══════════════════════════════════════════════
+# واجهة موحدة لـ fahad-news-ai
 # ═══════════════════════════════════════════════
 def fetch_top_arabic_news(limit: int = 1) -> list[dict]:
-    """
-    واجهة موحدة لباقي المشاريع — يجلب وينقّي ويرجع أهم الأخبار.
-    تتوافق مع احتياج fahad-news-ai/scheduler.py
-    """
+    """واجهة لباقي المشاريع."""
     from groq_client import GroqClient
 
     raw = fetch_all_news()
     unique = deduplicate(raw)
+    prefiltered = smart_prefilter(unique, max_count=60)
 
-    # طبّق curation فقط لو في GROQ_API_KEY
     try:
         groq = GroqClient()
-        curated = groq.curate_news(unique, max_final=max(limit, 5))
-        summarized = groq.summarize_news(curated[:limit])
+        curated = groq.curate_news(prefiltered, max_final=max(limit, 5))
+        rewritten = groq.rewrite_news(curated[:limit])
 
-        # حول للشكل المتوقع لـ fahad-news-ai
         return [
             {
                 "title": a.get("title_ar") or a["title"],
@@ -230,10 +258,10 @@ def fetch_top_arabic_news(limit: int = 1) -> list[dict]:
                 "source": a.get("source", ""),
                 "url": a.get("url", ""),
             }
-            for a in summarized
+            for a in rewritten
         ]
     except Exception as e:
-        log.error("[fetch_top_arabic] فشل curation: %s — رجوع أول %d", e, limit)
+        log.error("[fetch_top] فشل: %s", e)
         return [
             {
                 "title": a["title"],

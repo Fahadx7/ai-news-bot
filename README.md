@@ -1,113 +1,146 @@
-# 🤖 AI News Bot v7 — Newsroom Edition
+# 🤖 AI News Bot v8 — Saudi-First + Twitter-Ready
 
-بوت أخبار ذكي محسّن — يحل مشكلة `413 Payload Too Large` عبر:
+تحديث ضخم على v7 يحل 3 مشاكل أساسية:
+1. ❌ المحتوى ممل ومتشابه → ✅ صياغة احترافية بنبرة عربية
+2. ❌ تيوب "سعودي" ضعيف → ✅ 14 مصدر سعودي + تصنيف ذكي
+3. ❌ النسخ يدوياً متعب → ✅ نسخة Twitter-ready + زر مشاركة مباشر
 
-1. ✅ **Multi-model fallback** — يجرّب `llama-3.3-70b-versatile` → `llama-3.1-8b-instant` → `gpt-oss-120b`
-2. ✅ **Batching** — يقسم الأخبار على دفعات صغيرة (8 أخبار/دفعة) بدل 50
-3. ✅ **Trimming** — يقصّر العناوين والملخصات قبل الإرسال
-4. ✅ **Size guards** — يحسب حجم الـ payload قبل الإرسال ويقلصه لو لزم
+---
+
+## ✨ الميزات الجديدة في v8
+
+### 1. صياغة احترافية لكل خبر
+بدل النسخ من المصدر، Groq يعيد كتابة:
+- **عنوان جذاب** (6-12 كلمة)
+- **ملخص مكثف** (سطرين فقط)
+- **"ليه يهمك؟"** (سطر واحد)
+- **نسخة Twitter-ready** (≤280 حرف)
+
+### 2. تيوب سعودي قوي
+- 14 مصدر سعودي رسمي (سبق، الرياض، عكاظ، أرقام، الاقتصادية، واس، إلخ)
+- Google News queries خاصة بالسعودية (نيوم، أرامكو، رؤية 2030)
+- تصنيف تلقائي بـ 25+ كلمة مفتاحية
+- prefilter يحجز 30 مكان للأخبار السعودية
+
+### 3. أوامر فورية في تيليقرام
+- `/picks` — أفضل 5 أخبار اليوم (جاهزة لتويتر)
+- `/saudi` — أفضل 5 أخبار سعودية فقط
+- `/tech` — أفضل 5 أخبار تقنية فقط
+- `/help` — قائمة الأوامر
+
+### 4. زر "نشر لتويتر" مباشر
+كل خبر له زر يفتح Twitter مع النص الجاهز — اضغط ونشر فوراً.
 
 ---
 
 ## 📦 الهيكل
 
 ```
-ai-news-bot/
-├── config.py          # الإعدادات (مفاتيح، نماذج، جدول)
-├── main.py            # نقطة الدخول + الجدولة
-├── groq_client.py     # عميل Groq ذكي مع batching
-├── news_fetcher.py    # جلب RSS + Google News بالتوازي
-├── telegram_sender.py # إرسال لتيليقرام
+ai-news-bot-v8/
+├── config.py          # إعدادات + 14 مصدر سعودي + كلمات مفتاحية
+├── main.py            # نقطة الدخول
+├── groq_client.py     # AI client + rewrite_news (الصياغة الجديدة)
+├── news_fetcher.py    # جلب + تصنيف سعودي + smart_prefilter
+├── telegram_sender.py # رسائل Telegram + نسخ Twitter
+├── telegram_bot.py    # Listener للأوامر (/picks, /saudi, /tech)
 ├── requirements.txt
 ├── Procfile
-└── .env.example
+└── runtime.txt
 ```
 
 ---
 
-## 🚀 النشر على Railway
+## 🚀 النشر على Railway (نفس v7)
 
-1. **اسحب كل الملفات** لمستودعك على GitHub
-2. اربط Railway بالمستودع
-3. أضف Environment Variables في Railway:
-   ```
-   GROQ_API_KEY        = gsk_...
-   TELEGRAM_BOT_TOKEN  = ...
-   TELEGRAM_CHAT_ID    = ...
-   ```
-4. Railway راح يبني ويشغّل تلقائياً
-
----
-
-## 🧪 الاختبار المحلي
+ادفع الملفات الجديدة لمستودع GitHub، Railway راح يعيد النشر تلقائياً.
 
 ```bash
-pip install -r requirements.txt
+git add .
+git commit -m "feat: v8 - Saudi-first + Twitter-ready + bot commands"
+git push --force
+```
 
-# Linux/Mac
-export GROQ_API_KEY="gsk_..."
-export TELEGRAM_BOT_TOKEN="..."
-export TELEGRAM_CHAT_ID="..."
-python main.py
-
-# Windows PowerShell
-$env:GROQ_API_KEY = "gsk_..."
-$env:TELEGRAM_BOT_TOKEN = "..."
-$env:TELEGRAM_CHAT_ID = "..."
-python main.py
+**تأكد إن Environment Variables موجودة في Railway:**
+```
+GROQ_API_KEY        = gsk_...
+TELEGRAM_BOT_TOKEN  = ...
+TELEGRAM_CHAT_ID    = ... (للنشر التلقائي)
 ```
 
 ---
 
-## ⚙️ التخصيص
+## 📊 الفرق عن v7
 
-كل الإعدادات في `config.py`:
+| الميزة | v7 | v8 |
+|--------|----|----|
+| الصياغة | تنسخ من المصدر | إعادة كتابة احترافية |
+| نسخ Twitter | لا | نعم + زر مباشر |
+| مصادر سعودية | 0 | 14 مصدر |
+| تصنيف سعودي | لا | تلقائي بـ 25 كلمة مفتاحية |
+| أوامر تفاعلية | لا | `/picks` `/saudi` `/tech` |
+| تيليقرام | رسالة واحدة طويلة | رسالة لكل خبر + زر مشاركة |
 
+---
+
+## 💡 طريقة الاستخدام الجديدة
+
+### قبل (v7):
+1. تفتح تيليقرام
+2. تقرأ النشرة الطويلة
+3. تختار خبر
+4. تنسخ يدوياً
+5. تفتح تويتر
+6. تلصق + تعدّل
+7. تنشر
+
+**الوقت:** ~3 دقائق لكل خبر
+
+### بعد (v8):
+1. تفتح تيليقرام
+2. تشوف الخبر بصيغته الجذابة
+3. تشوف نسخة Twitter جاهزة تحته
+4. تضغط "🐦 افتح تويتر للنشر"
+5. تويتر يفتح والنص جاهز — اضغط نشر
+
+**الوقت:** ~15 ثانية لكل خبر ⚡
+
+أو استخدم `/picks` تجي 5 أخبار جاهزة دفعة واحدة.
+
+---
+
+## 🔧 تخصيص
+
+### إضافة مصدر سعودي جديد
+في `config.py`:
 ```python
-# نموذج Groq المفضل
-GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", ...]
-
-# حجم الدفعة (إذا 413 يرجع، قلّص هذا الرقم)
-BATCH_SIZE = 8
-
-# عدد الأخبار النهائية
-MAX_FINAL_NEWS = 10
-
-# الجدولة (الرياض)
-SCHEDULE_HOURS = [8, 13, 18, 22]  # 4 دورات يومياً
-DAILY_REPORT_HOUR = 23             # تقرير شامل 11م
+SAUDI_SOURCES = [
+    ...,
+    "https://your-new-saudi-source.com/feed",
+]
 ```
 
----
-
-## 🔌 الربط مع fahad-news-ai
-
-البوت يصدّر دالة `fetch_top_arabic_news(limit)` للاستخدام من نظام fahad-news-ai:
-
+### إضافة كلمة مفتاحية للتصنيف السعودي
 ```python
-from news_fetcher import fetch_top_arabic_news
-top = fetch_top_arabic_news(limit=1)
-# [{"title": "...", "content": "...", "source": "...", "url": "..."}]
+SAUDI_KEYWORDS = [
+    ...,
+    "كلمة جديدة",
+]
 ```
 
-ضع هذا الملف في نفس مجلد `fahad-news-ai/scheduler.py`.
+### تغيير المواعيد
+```python
+SCHEDULE_HOURS = [7, 12, 17, 21]  # بدل 8 13 18 22
+```
 
 ---
 
-## 🆚 الفرق عن v6 القديم
+## ❓ المشاكل المحتملة
 
-| الميزة | v6 القديم | v7 الجديد |
-|--------|----------|----------|
-| النموذج الافتراضي | qwen3-32b (32K context) | llama-3.3-70b (128K context) |
-| Fallback | نموذج واحد | chain من 3 نماذج |
-| Batching | كل الأخبار دفعة وحدة | 8 أخبار/دفعة |
-| Payload | full body من كل خبر | title + summary مختصر |
-| Size guard | لا يوجد | يقصّر تلقائياً قبل الإرسال |
+**سؤال:** أمر `/picks` يقول "ما عندي أخبار محدّثة"؟  
+**الحل:** البوت يحتاج يجلب أول دورة. انتظر أول موعد (8ص أو 1ظ أو 6م أو 10م)، أو شغّل البوت من Railway → Restart.
 
----
+**سؤال:** زر "افتح تويتر" ما يشتغل على iPhone؟  
+**الحل:** iOS يفتح web Twitter. لتجنبها، انسخ النص يدوياً من النسخة الجاهزة (تحت الخبر).
 
-## 📝 ملاحظات
-
-- لو رجعت مشاكل 413 ثانية، قلل `BATCH_SIZE` لـ 5
-- لو تبي تستخدم qwen في الفترات قليلة الأخبار، أضف `qwen/qwen3-32b` في `GROQ_MODELS` بعد llama
-- Telegram يحدد كل رسالة بـ 4096 حرف — البوت يقصّر تلقائياً
+**سؤال:** الأخبار السعودية قليلة؟  
+**الحل:** بعض RSS تتعطل. زد المصادر في `SAUDI_SOURCES` أو زد `saudi_quota` في `smart_prefilter`.

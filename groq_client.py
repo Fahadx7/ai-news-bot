@@ -1,10 +1,10 @@
 """
-groq_client.py — عميل Groq محسّن
-يحل مشكلة 413 Payload Too Large عبر:
-    1. تقسيم الأخبار على دفعات صغيرة (batching)
-    2. تقصير المحتوى (title + summary فقط، لا full body)
-    3. multi-model fallback (لو فشل نموذج، يجرّب الثاني)
-    4. حساب حجم الـ payload قبل الإرسال
+groq_client.py v8 — عميل Groq محسّن
+الجديد:
+    1. صياغة احترافية بنبرة سعودية (مو ترجمة حرفية)
+    2. توليد نسخة Twitter-ready لكل خبر (≤ 280 حرف)
+    3. تصنيف ذكي للأخبار السعودية
+    4. كل ما سبق + multi-model fallback + batching
 """
 
 import json
@@ -20,22 +20,20 @@ from config import (
     GROQ_API_KEY,
     GROQ_MODELS,
     MAX_FINAL_NEWS,
-    MAX_FINAL_VIDEOS,
     MAX_PAYLOAD_KB,
     MAX_SUMMARY_LEN,
     MAX_TITLE_LEN,
+    is_saudi_news,
 )
 
 log = logging.getLogger(__name__)
-
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 # ═══════════════════════════════════════════════
-# تنظيف وتقصير
+# أدوات
 # ═══════════════════════════════════════════════
 def trim_text(text: str, max_len: int) -> str:
-    """يقطع النص عند آخر مسافة قبل الحد."""
     if not text:
         return ""
     text = re.sub(r"\s+", " ", text).strip()
@@ -46,9 +44,8 @@ def trim_text(text: str, max_len: int) -> str:
 
 
 def slim_article(article: dict) -> dict:
-    """يحوّل خبر كامل إلى نسخة مختصرة للإرسال لـ Groq."""
     return {
-        "i": article.get("id") or article.get("url", "")[-12:],  # ID قصير
+        "i": article.get("id") or article.get("url", "")[-12:],
         "t": trim_text(article.get("title", ""), MAX_TITLE_LEN),
         "s": trim_text(
             article.get("summary") or article.get("description", ""),
@@ -58,81 +55,85 @@ def slim_article(article: dict) -> dict:
     }
 
 
-def slim_video(video: dict) -> dict:
-    return {
-        "i": video.get("id", ""),
-        "t": trim_text(video.get("title", ""), MAX_TITLE_LEN),
-        "ch": video.get("channel", ""),
-    }
-
-
 def payload_size_kb(data) -> float:
     return len(json.dumps(data, ensure_ascii=False).encode("utf-8")) / 1024
 
 
 # ═══════════════════════════════════════════════
-# Prompts
+# Prompts الجديدة v8
 # ═══════════════════════════════════════════════
-CURATION_SYSTEM = """أنت محرّر أخبار محترف. مهمتك اختيار أهم الأخبار من قائمة.
 
-المعايير بالأولوية:
-1. الأهمية الإخبارية (تأثير عالمي/إقليمي)
-2. حداثة الخبر
-3. صلته بالتقنية والأعمال والذكاء الاصطناعي والشأن السعودي
-4. تجنّب التكرار
+CURATION_SYSTEM = """أنت محرر أخبار محترف لجمهور سعودي/خليجي.
 
-ترجع JSON فقط بهذا الشكل:
+اختر أهم الأخبار بهذا الترتيب:
+1. أخبار سعودية مهمة (اقتصاد/سياسة/تقنية/اجتماعية)
+2. أخبار خليجية مؤثرة على السعودية
+3. أخبار تقنية وذكاء اصطناعي عالمية مهمة
+4. تجنب التكرار وتجنب الأخبار الترفيهية السطحية
+
+ترجع JSON فقط:
 {"selected": ["id1", "id2", ...]}
 
-ما تكتب أي شيء قبل أو بعد الـ JSON. لا backticks. JSON خام."""
+لا backticks. JSON خام."""
 
 
-SUMMARY_SYSTEM = """أنت محرر أخبار. اكتب ملخصاً عربياً مختصراً للأخبار المختارة.
+REWRITE_SYSTEM = """أنت كاتب محتوى محترف لمنصات التواصل العربية.
+مهمتك: إعادة صياغة الخبر بنبرة جذابة وعربية فصيحة.
 
-لكل خبر:
-- عنوان جذاب < 80 حرف
-- ملخص 2-3 أسطر
-- إيموجي مناسب في البداية
+لكل خبر، أنتج:
+1. عنوان عربي قوي (6-12 كلمة)
+2. ملخص (سطرين فقط — Hook + معلومة)
+3. جملة "ليه يهمك" (سطر واحد فقط)
+4. تصنيف: ["سعودي", "اقتصاد", "تقنية", "سياسة", "ذكاء اصطناعي", "علوم", "ترفيه"]
+5. إيموجي مناسب
+6. نسخة Twitter جاهزة (أقل من 250 حرف، تجمع كل شيء)
 
-ترجع JSON بهذا الشكل:
+قواعد الصياغة:
+- نبرة عربية طبيعية (مو ترجمة آلية)
+- لو الخبر سعودي، استخدم 🇸🇦 في الإيموجي
+- نسخة Twitter: تبدأ بإيموجي + عنوان قوي + 1-2 سطر + هاشتاق واحد فقط
+- ممنوع كلام مبهم زي "في تطور مهم..." — بدلها بأرقام/أسماء/تواريخ محددة
+
+ترجع JSON فقط:
 {
   "items": [
-    {"id": "id1", "title": "...", "summary": "...", "emoji": "🚀"},
+    {
+      "id": "id1",
+      "title": "عنوان جذاب",
+      "summary": "السطر الأول. السطر الثاني.",
+      "why_matters": "ليه يهمك في سطر واحد",
+      "category": "سعودي|اقتصاد|تقنية|...",
+      "emoji": "🇸🇦",
+      "twitter_text": "🇸🇦 العنوان القوي\\n\\nالملخص في سطر أو اثنين.\\n\\n#السعودية"
+    },
     ...
   ]
 }
 
-JSON خام فقط. لا backticks."""
+JSON خام فقط. لا backticks. لا تتجاوز 250 حرف في twitter_text."""
 
 
 # ═══════════════════════════════════════════════
 # الكلاس الرئيسي
 # ═══════════════════════════════════════════════
 class GroqClient:
-    """عميل Groq ذكي مع batching و fallback."""
-
     def __init__(self, timeout: int = 30):
         if not GROQ_API_KEY:
-            raise RuntimeError("GROQ_API_KEY مطلوب في environment")
+            raise RuntimeError("GROQ_API_KEY مطلوب")
         self.timeout = timeout
         self.last_used_model: Optional[str] = None
 
-    # ─────────────────────────────────────────
-    # استدعاء واحد لـ Groq مع fallback
-    # ─────────────────────────────────────────
     def _call(
         self,
         system: str,
         user: str,
         max_tokens: int = 2000,
-        temperature: float = 0.3,
+        temperature: float = 0.4,
     ) -> Optional[str]:
-        """يحاول كل النماذج بالترتيب — أول واحد ينجح يرجع نتيجته."""
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json",
         }
-
         for model in GROQ_MODELS:
             body = {
                 "model": model,
@@ -144,7 +145,6 @@ class GroqClient:
                 "max_tokens": max_tokens,
                 "response_format": {"type": "json_object"},
             }
-
             size = payload_size_kb(body)
 
             try:
@@ -156,20 +156,14 @@ class GroqClient:
                     log.info("[groq] ✅ %s نجح (size=%.1fKB)", model, size)
                     return r.json()["choices"][0]["message"]["content"]
                 elif r.status_code == 413:
-                    log.warning(
-                        "[groq] ❌ %s — 413 Payload Too Large (size=%.1fKB)",
-                        model, size,
-                    )
-                    continue  # جرّب نموذج ثاني (نفس الـ payload لكن بنموذج context أكبر)
+                    log.warning("[groq] ❌ %s — 413 (size=%.1fKB)", model, size)
+                    continue
                 elif r.status_code == 429:
-                    log.warning("[groq] ⏸ %s — Rate limited، انتظر 5ث", model)
+                    log.warning("[groq] ⏸ %s — Rate limited 5s", model)
                     time.sleep(5)
                     continue
                 else:
-                    log.warning(
-                        "[groq] ❌ %s — HTTP %s: %s",
-                        model, r.status_code, r.text[:200],
-                    )
+                    log.warning("[groq] ❌ %s — HTTP %s", model, r.status_code)
                     continue
             except requests.exceptions.RequestException as e:
                 log.warning("[groq] ❌ %s — Exception: %s", model, e)
@@ -179,73 +173,56 @@ class GroqClient:
         return None
 
     # ─────────────────────────────────────────
-    # Curation — اختيار أهم الأخبار
+    # Curation
     # ─────────────────────────────────────────
     def curate_news(
         self,
         articles: list[dict],
         max_final: int = MAX_FINAL_NEWS,
+        prefer_saudi: bool = True,
     ) -> list[dict]:
-        """
-        يختار أهم max_final خبر من قائمة كبيرة.
-        يقسم الأخبار على دفعات صغيرة (BATCH_SIZE) لتجنب الـ 413.
-        """
         if not articles:
             return []
-
         if len(articles) <= max_final:
-            log.info("[curate] %d أخبار أقل من الحد، نرجعهم كلهم", len(articles))
             return articles
 
-        # ابني خريطة id → article كاملة
-        slim_articles = [slim_article(a) for a in articles]
-        id_to_article = {sa["i"]: a for sa, a in zip(slim_articles, articles)}
+        # ترتيب: السعودية أولاً
+        if prefer_saudi:
+            saudi = [a for a in articles if a.get("is_saudi") or is_saudi_news(a)]
+            non_saudi = [a for a in articles if not (a.get("is_saudi") or is_saudi_news(a))]
+            articles = saudi + non_saudi
+            log.info("[curate] 🇸🇦 %d أخبار سعودية في الأولوية", len(saudi))
 
-        # قسّم على دفعات
+        slim_arts = [slim_article(a) for a in articles]
+        id_to_art = {sa["i"]: a for sa, a in zip(slim_arts, articles)}
+
         batches = [
-            slim_articles[i : i + BATCH_SIZE]
-            for i in range(0, len(slim_articles), BATCH_SIZE)
+            slim_arts[i : i + BATCH_SIZE]
+            for i in range(0, len(slim_arts), BATCH_SIZE)
         ]
-        log.info(
-            "[curate] %d خبر → %d دفعة × %d خبر",
-            len(articles), len(batches), BATCH_SIZE,
-        )
+        log.info("[curate] %d خبر → %d دفعة", len(articles), len(batches))
 
-        # اختر من كل دفعة top-3
-        per_batch_keep = max(2, max_final // len(batches) + 1)
+        per_batch = max(2, max_final // len(batches) + 1)
         selected_ids: list[str] = []
 
         for idx, batch in enumerate(batches, 1):
             user_prompt = (
-                f"اختر أهم {per_batch_keep} أخبار من هذي القائمة:\n\n"
+                f"اختر أهم {per_batch} أخبار:\n\n"
                 f"{json.dumps(batch, ensure_ascii=False)}"
             )
-
-            # تحقق من الحجم
             test_size = payload_size_kb(
                 {"system": CURATION_SYSTEM, "user": user_prompt}
             )
             if test_size > MAX_PAYLOAD_KB:
-                log.warning(
-                    "[curate] دفعة %d/%d حجمها %.1fKB > الحد، نقلصها",
-                    idx, len(batches), test_size,
-                )
-                # قلل الـ summary أكثر
                 for item in batch:
                     item["s"] = trim_text(item["s"], 100)
                 user_prompt = (
-                    f"اختر أهم {per_batch_keep} أخبار:\n\n"
+                    f"اختر أهم {per_batch} أخبار:\n\n"
                     f"{json.dumps(batch, ensure_ascii=False)}"
                 )
 
-            raw = self._call(
-                CURATION_SYSTEM,
-                user_prompt,
-                max_tokens=400,  # JSON مختصر فقط
-            )
-
+            raw = self._call(CURATION_SYSTEM, user_prompt, max_tokens=400)
             if not raw:
-                log.warning("[curate] دفعة %d/%d فشلت — نتخطاها", idx, len(batches))
                 continue
 
             try:
@@ -253,24 +230,20 @@ class GroqClient:
                 ids = data.get("selected", [])
                 if isinstance(ids, list):
                     selected_ids.extend(str(i) for i in ids)
-                    log.info(
-                        "[curate] دفعة %d/%d ✅ اختار %d",
-                        idx, len(batches), len(ids),
-                    )
+                    log.info("[curate] دفعة %d/%d ✅ اختار %d", idx, len(batches), len(ids))
             except Exception as e:
-                log.error("[curate] دفعة %d/%d parse error: %s", idx, len(batches), e)
+                log.error("[curate] دفعة %d parse error: %s", idx, e)
 
-        # رجّع المقالات الكاملة بناءً على الـ IDs
+        # رجّع الأصلية بناءً على IDs
         final = []
         seen = set()
         for sid in selected_ids:
-            if sid in id_to_article and sid not in seen:
-                final.append(id_to_article[sid])
+            if sid in id_to_art and sid not in seen:
+                final.append(id_to_art[sid])
                 seen.add(sid)
                 if len(final) >= max_final:
                     break
 
-        # لو ما حصلنا الكفاية، نملأ من البقية
         if len(final) < max_final:
             for a in articles:
                 if a not in final:
@@ -278,54 +251,89 @@ class GroqClient:
                     if len(final) >= max_final:
                         break
 
-        log.info("[curate] ✅ النتيجة النهائية: %d خبر", len(final))
+        log.info("[curate] ✅ النهائي: %d خبر", len(final))
         return final
 
     # ─────────────────────────────────────────
-    # Summarize — كتابة ملخصات للأخبار
+    # Rewrite — صياغة احترافية + Twitter-ready (الجديد!)
     # ─────────────────────────────────────────
-    def summarize_news(self, articles: list[dict]) -> list[dict]:
-        """يضيف عنوان جذاب وملخص مكثف لكل خبر."""
+    def rewrite_news(self, articles: list[dict]) -> list[dict]:
+        """
+        يعيد صياغة كل خبر بنبرة جذابة + نسخة Twitter-ready.
+        يضيف: title_ar, summary_ar, why_matters, category, emoji, twitter_text
+        """
         if not articles:
             return []
 
-        slim = [slim_article(a) for a in articles]
-        id_to_article = {sa["i"]: a for sa, a in zip(slim, articles)}
+        # نقسم على دفعات لتجنب 413
+        batch_size = 4  # 4 أخبار/دفعة (تقليل أكثر للحصول على جودة أعلى)
+        batches = [
+            articles[i : i + batch_size]
+            for i in range(0, len(articles), batch_size)
+        ]
 
-        user_prompt = (
-            f"اكتب عناوين وملخصات عربية للأخبار التالية:\n\n"
-            f"{json.dumps(slim, ensure_ascii=False)}"
-        )
+        all_rewritten = []
+        for idx, batch in enumerate(batches, 1):
+            slim = [slim_article(a) for a in batch]
+            id_to_art = {sa["i"]: a for sa, a in zip(slim, batch)}
 
-        size = payload_size_kb({"sys": SUMMARY_SYSTEM, "usr": user_prompt})
-        if size > MAX_PAYLOAD_KB:
-            # قسّمهم
-            log.info("[summary] حجم %.1fKB > الحد، نقسم", size)
-            half = len(slim) // 2
-            return self.summarize_news(articles[:half]) + self.summarize_news(articles[half:])
+            user_prompt = (
+                f"أعد صياغة الأخبار التالية مع نسخة Twitter لكل واحد:\n\n"
+                f"{json.dumps(slim, ensure_ascii=False)}"
+            )
 
-        raw = self._call(SUMMARY_SYSTEM, user_prompt, max_tokens=1500)
-        if not raw:
-            log.warning("[summary] فشل — نرجع الأخبار بدون تلخيص")
-            return articles
+            raw = self._call(
+                REWRITE_SYSTEM, user_prompt, max_tokens=2000, temperature=0.5
+            )
+            if not raw:
+                log.warning("[rewrite] دفعة %d فشلت", idx)
+                # رجّع الأخبار كما هي بدون rewrite
+                for a in batch:
+                    enriched = dict(a)
+                    enriched["title_ar"] = a.get("title", "")
+                    enriched["summary_ar"] = a.get("summary", "")
+                    enriched["why_matters"] = ""
+                    enriched["category"] = "أخبار"
+                    enriched["emoji"] = "📰"
+                    enriched["twitter_text"] = (
+                        f"📰 {trim_text(a.get('title', ''), 200)}"
+                    )
+                    all_rewritten.append(enriched)
+                continue
 
-        try:
-            data = self._parse_json(raw)
-            items = data.get("items", [])
-            result = []
-            for item in items:
-                aid = str(item.get("id", ""))
-                if aid in id_to_article:
-                    enriched = dict(id_to_article[aid])
-                    enriched["title_ar"] = item.get("title", enriched.get("title", ""))
-                    enriched["summary_ar"] = item.get("summary", "")
-                    enriched["emoji"] = item.get("emoji", "📰")
-                    result.append(enriched)
-            log.info("[summary] ✅ لخّص %d خبر", len(result))
-            return result if result else articles
-        except Exception as e:
-            log.error("[summary] parse error: %s", e)
-            return articles
+            try:
+                data = self._parse_json(raw)
+                items = data.get("items", [])
+                for item in items:
+                    aid = str(item.get("id", ""))
+                    if aid in id_to_art:
+                        original = id_to_art[aid]
+                        enriched = dict(original)
+                        enriched["title_ar"] = item.get("title", original.get("title", ""))
+                        enriched["summary_ar"] = item.get("summary", "")
+                        enriched["why_matters"] = item.get("why_matters", "")
+                        enriched["category"] = item.get("category", "أخبار")
+                        enriched["emoji"] = item.get("emoji", "📰")
+                        # تأكد من حد Twitter
+                        twitter_text = item.get("twitter_text", "")
+                        if len(twitter_text) > 280:
+                            twitter_text = twitter_text[:270].rsplit(" ", 1)[0] + "…"
+                        enriched["twitter_text"] = twitter_text
+                        all_rewritten.append(enriched)
+                log.info("[rewrite] دفعة %d/%d ✅ %d خبر", idx, len(batches), len(items))
+            except Exception as e:
+                log.error("[rewrite] دفعة %d parse error: %s", idx, e)
+
+        return all_rewritten
+
+    # ─────────────────────────────────────────
+    # Generate top picks (للأمر /picks)
+    # ─────────────────────────────────────────
+    def generate_picks(self, articles: list[dict], count: int = 5) -> list[dict]:
+        """يختار أفضل N أخبار اليوم بصيغة Twitter-ready."""
+        # curate ثم rewrite
+        curated = self.curate_news(articles, max_final=count)
+        return self.rewrite_news(curated)
 
     # ─────────────────────────────────────────
     # Helpers
@@ -341,14 +349,10 @@ class GroqClient:
             match = re.search(r"\{[\s\S]*\}", clean)
             if match:
                 return json.loads(match.group(0))
-            raise ValueError(f"رد غير صالح كـ JSON: {raw[:200]}")
+            raise ValueError(f"رد غير صالح: {raw[:200]}")
 
-    # ─────────────────────────────────────────
-    # Health Check
-    # ─────────────────────────────────────────
     def health_check(self) -> bool:
-        """يفحص أول نموذج في القائمة."""
-        log.info("[health] فحص النماذج المتاحة...")
+        log.info("[health] فحص النماذج...")
         for model in GROQ_MODELS:
             try:
                 r = requests.post(
@@ -367,9 +371,7 @@ class GroqClient:
                 if r.status_code == 200:
                     log.info("[health] ✅ %s يعمل", model)
                     return True
-                else:
-                    log.warning("[health] ⚠️ %s — HTTP %s", model, r.status_code)
-            except Exception as e:
-                log.warning("[health] ⚠️ %s — %s", model, e)
+            except Exception:
+                pass
         log.error("[health] ❌ كل النماذج فشلت")
         return False
