@@ -18,14 +18,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     name: Deploy to Cloudflare Workers
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
 
       - name: Deploy Worker
         uses: cloudflare/wrangler-action@v3
@@ -40,8 +37,3 @@ jobs:
         run: |
           echo "✅ Worker deployed successfully!"
           echo "🌐 URL: https://fahadai-news.aboamran2013.workers.dev/"
-
-      - name: Notify deployment failure
-        if: failure()
-        run: |
-          echo "❌ Deployment failed! Check logs above."
